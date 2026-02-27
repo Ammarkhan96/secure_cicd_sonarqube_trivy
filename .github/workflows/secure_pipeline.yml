@@ -1,0 +1,67 @@
+name: Secure CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  security-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - name: Install Dependencies
+      run: |
+        cd app
+        npm install
+
+    # ---------------- SAST ----------------
+    - name: SonarQube Scan
+      uses: sonarsource/sonarqube-scan-action@master
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    # ---------------- SCA (Dependency Scan) ----------------
+    - name: Trivy FS Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '1'
+
+    # ---------------- Docker Build ----------------
+    - name: Build Docker Image
+      run: docker build -t ${{ secrets.DOCKER_USERNAME }}/secure-app:latest .
+
+    # ---------------- Container Scan ----------------
+    - name: Trivy Image Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ secrets.DOCKER_USERNAME }}/secure-app:latest'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '1'
+
+    # ---------------- Push Image ----------------
+    - name: Login to DockerHub
+      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+    - name: Push Image
+      run: docker push ${{ secrets.DOCKER_USERNAME }}/secure-app:latest
+
+    # ---------------- Slack Notification ----------------
+    - name: Notify Slack
+      if: always()
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+        --data '{"text":"Secure CI/CD Pipeline Completed for commit ${{ github.sha }}"}' \
+        ${{ secrets.SLACK_WEBHOOK }}
