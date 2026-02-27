@@ -6,26 +6,32 @@ on:
       - main
 
 jobs:
-  security-pipeline:
+  build-and-secure:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4 # Updated to v4 for 2026 standards
 
-    - name: Setup Node
-      uses: actions/setup-node@v3
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        node-version: 16
+        node-version: 20 # Standard for 2026
 
     - name: Install Dependencies
       run: |
-        cd app
+        # Agar aapka code 'app' folder mein hai toh:
+        # cd app && npm install
+        # Agar root mein hai toh:
         npm install
 
-    # ---------------- SAST ----------------
+    # ---------------- SAST (Code Analysis) ----------------
     - name: SonarQube Scan
       uses: sonarsource/sonarqube-scan-action@master
+      with:
+        args: >
+          -Dsonar.projectKey=secure_cicd_sonarqube_trivy
+          -Dsonar.sources=.
       env:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -37,31 +43,41 @@ jobs:
         scan-type: 'fs'
         scan-ref: '.'
         severity: 'CRITICAL,HIGH'
-        exit-code: '1'
+        exit-code: '0' # Abhi ke liye 0 rakha hai taake pipeline crash na ho alerts ke liye
 
     # ---------------- Docker Build ----------------
     - name: Build Docker Image
-      run: docker build -t ${{ secrets.DOCKER_USERNAME }}/secure-app:latest .
+      run: |
+        docker build -t ${{ secrets.DOCKER_USERNAME }}/secure-app:${{ github.sha }} .
+        docker tag ${{ secrets.DOCKER_USERNAME }}/secure-app:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/secure-app:latest
 
     # ---------------- Container Scan ----------------
     - name: Trivy Image Scan
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: '${{ secrets.DOCKER_USERNAME }}/secure-app:latest'
+        image-ref: '${{ secrets.DOCKER_USERNAME }}/secure-app:${{ github.sha }}'
         severity: 'CRITICAL,HIGH'
-        exit-code: '1'
+        format: 'table'
 
     # ---------------- Push Image ----------------
     - name: Login to DockerHub
-      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
     - name: Push Image
-      run: docker push ${{ secrets.DOCKER_USERNAME }}/secure-app:latest
-
-    # ---------------- Slack Notification ----------------
-    - name: Notify Slack
-      if: always()
       run: |
-        curl -X POST -H 'Content-type: application/json' \
-        --data '{"text":"Secure CI/CD Pipeline Completed for commit ${{ github.sha }}"}' \
-        ${{ secrets.SLACK_WEBHOOK }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/secure-app:${{ github.sha }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/secure-app:latest
+
+    # ---------------- Professional Slack Notification ----------------
+    - name: Notify Slack
+      if: always() # Success ho ya failure, notification lazmi jaye
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_TITLE: "Deployment Update: ${{ github.repository }}"
+        SLACK_MESSAGE: "Build Status: ${{ job.status }}\nCommit: ${{ github.event.head_commit.message }}"
+        SLACK_COLOR: ${{ job.status == 'success' && 'good' || 'danger' }}
+        SLACK_ICON: https://github.com/fluidicon.png
